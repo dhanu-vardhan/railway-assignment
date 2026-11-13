@@ -74,5 +74,5 @@ jobs:
             docker pull "$IMAGE"
             docker stop app || true
             docker rm app || true
-            docker run -d --name app --restart unless-stopped -p 80:3000 "$IMAGE"
+            docker run -d --name app --restart unless-stopped -p 80:8080 "$IMAGE"
             docker image prune -f
