@@ -1,64 +1,78 @@
-name: Build, Publish, and Deploy to EC2
+name: Docker Build, Publish & Deploy to AWS
 
 on:
   pull_request:
-    branches: [ "main", "master" ]
-  workflow_dispatch:
+    branches: [main]
+  push:
+    branches: [main]
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-publish:
+  build-and-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
     outputs:
-      image_tag: ${{ steps.meta.outputs.version }}
-
+      image: ${{ steps.image.outputs.name }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Log in to the Container registry
+      - name: Lowercase image name
+        id: image
+        run: echo "name=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for Docker
+      - name: Extract tags
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=ref,event=pr
+            type=sha
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+      - name: Build and push image
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
-    needs: build-and-publish
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to EC2
+      - name: Deploy to AWS EC2
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          IMAGE: ${{ needs.build-and-push.outputs.image }}:latest
+          GH_USER: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
+          username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          envs: IMAGE,GH_USER,GH_TOKEN
           script: |
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            docker pull ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.build-and-publish.outputs.image_tag }}
-            docker stop my-node-app || true
-            docker rm my-node-app || true
-            docker run -d --name my-node-app -p 3000:3000 ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.build-and-publish.outputs.image_tag }}
+            echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin
+            docker pull "$IMAGE"
+            docker stop app || true
+            docker rm app || true
+            docker run -d --name app --restart unless-stopped -p 80:3000 "$IMAGE"
+            docker image prune -f
