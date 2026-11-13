@@ -3,6 +3,7 @@ name: Build, Publish, and Deploy to EC2
 on:
   pull_request:
     branches: [ "main", "master" ]
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -56,4 +57,8 @@ jobs:
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker pull ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.build-and-publish.outputs.image_tag }}
+            docker stop my-node-app || true
+            docker rm my-node-app || true
+            docker run -d --name my-node-app -p 3000:3000 ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.build-and-publish.outputs.image_tag }}
